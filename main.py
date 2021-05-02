@@ -25,7 +25,6 @@ def main():
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
-
     if args.cuda and torch.cuda.is_available() and args.cuda_deterministic:
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
@@ -178,9 +177,9 @@ def main():
         if j % args.log_interval == 0 and len(episode_rewards) > 1:
             total_num_steps = (j + 1) * args.num_processes * args.num_steps
             end = time.time()
+            print(action)
             print(
-                "Updates {}, num timesteps {}, FPS {} \n Last {} training episodes: mean/median reward {:.1f}/{:.1f}, min/max reward {:.1f}/{:.1f}\n"
-                .format(j, total_num_steps,
+                "Updates {}, num timesteps {}, FPS {} \n Last {} training episodes: mean/median reward {:.1f}/{:.1f}, min/max reward {:.1f}/{:.1f}, entropy: {:.3f}, critic loss: {:.3f}, actor loss: {:.3f}\n".format(j, total_num_steps,
                         int(total_num_steps / (end - start)),
                         len(episode_rewards), np.mean(episode_rewards),
                         np.median(episode_rewards), np.min(episode_rewards),
