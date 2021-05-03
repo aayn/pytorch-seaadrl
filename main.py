@@ -177,7 +177,6 @@ def main():
         if j % args.log_interval == 0 and len(episode_rewards) > 1:
             total_num_steps = (j + 1) * args.num_processes * args.num_steps
             end = time.time()
-            print(action)
             print(
                 "Updates {}, num timesteps {}, FPS {} \n Last {} training episodes: mean/median reward {:.1f}/{:.1f}, min/max reward {:.1f}/{:.1f}, entropy: {:.3f}, critic loss: {:.3f}, actor loss: {:.3f}\n".format(j, total_num_steps,
                         int(total_num_steps / (end - start)),
