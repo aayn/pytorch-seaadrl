@@ -13,6 +13,47 @@ def get_device():
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def get_lr(optimizer):
+    for param_group in optimizer.param_groups:
+        return param_group["lr"]
+
+
+def compute_feature_size(input_shape, convs):
+    return convs(torch.zeros(1, *input_shape)).view(1, -1).size(1)
+
+
+def get_ball_position(ram):
+    ball_x = ram[49]
+    ball_y = ram[54]
+
+    return (ball_x, ball_y)
+
+
+def get_player_paddle_y(ram):
+    return ram[51]
+
+
+def get_cpu_paddle_y(ram):
+    return ram[21]
+
+
+def get_player_score(ram):
+    return ram[14]
+
+
+def get_cpu_score(ram):
+    return ram[13]
+
+
+def get_ball_direction(prev_ram, cur_ram):
+    px, py = get_ball_position(prev_ram)
+    x, y = get_ball_position(cur_ram)
+
+    if px < x:
+        return 1
+    return 0
+
+
 # Get a render function
 def get_render_func(venv):
     if hasattr(venv, "envs"):

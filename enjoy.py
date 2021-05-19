@@ -83,6 +83,9 @@ while True:
     # Obser reward and next obs
     obs, reward, done, _ = env.step(action)
 
+    ram = env.get_attr("unwrapped")[0]._get_ram()
+    print(ram[14])
+
     masks.fill_(0.0 if done else 1.0)
 
     if args.env_name.find('Bullet') > -1:

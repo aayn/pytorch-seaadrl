@@ -3,18 +3,22 @@ import os
 import gym
 import numpy as np
 import torch
+import torch.multiprocessing as mp
 from gym.spaces.box import Box
 from gym.wrappers.clip_action import ClipAction
-from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
-                                                     EpisodicLifeEnv,
-                                                     FireResetEnv,
-                                                     MaxAndSkipEnv,
-                                                     NoopResetEnv, WarpFrame)
+from stable_baselines3.common.atari_wrappers import (
+    ClipRewardEnv,
+    EpisodicLifeEnv,
+    FireResetEnv,
+    MaxAndSkipEnv,
+    NoopResetEnv,
+    WarpFrame,
+)
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import (DummyVecEnv, SubprocVecEnv,
-                                              VecEnvWrapper)
-from stable_baselines3.common.vec_env.vec_normalize import \
-    VecNormalize as VecNormalize_
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnvWrapper
+from stable_baselines3.common.vec_env.vec_normalize import VecNormalize as VecNormalize_
+
+from a2c_ppo_acktr import algo, utils
 
 try:
     import dmc2gym
@@ -35,27 +39,30 @@ except ImportError:
 def make_env(env_id, seed, rank, log_dir, allow_early_resets):
     def _thunk():
         if env_id.startswith("dm"):
-            _, domain, task = env_id.split('.')
+            _, domain, task = env_id.split(".")
             env = dmc2gym.make(domain_name=domain, task_name=task)
             env = ClipAction(env)
         else:
             env = gym.make(env_id)
 
-        is_atari = hasattr(gym.envs, 'atari') and isinstance(
-            env.unwrapped, gym.envs.atari.atari_env.AtariEnv)
+        is_atari = hasattr(gym.envs, "atari") and isinstance(
+            env.unwrapped, gym.envs.atari.atari_env.AtariEnv
+        )
         if is_atari:
             env = NoopResetEnv(env, noop_max=30)
             env = MaxAndSkipEnv(env, skip=4)
 
         env.seed(seed + rank)
 
-        if str(env.__class__.__name__).find('TimeLimit') >= 0:
+        if str(env.__class__.__name__).find("TimeLimit") >= 0:
             env = TimeLimitMask(env)
 
         if log_dir is not None:
-            env = Monitor(env,
-                          os.path.join(log_dir, str(rank)),
-                          allow_early_resets=allow_early_resets)
+            env = Monitor(
+                env,
+                os.path.join(log_dir, str(rank)),
+                allow_early_resets=allow_early_resets,
+            )
 
         if is_atari:
             if len(env.observation_space.shape) == 3:
@@ -68,7 +75,8 @@ def make_env(env_id, seed, rank, log_dir, allow_early_resets):
             raise NotImplementedError(
                 "CNN models work only for atari,\n"
                 "please use a custom wrapper for a custom pixel input env.\n"
-                "See wrap_deepmind for an example.")
+                "See wrap_deepmind for an example."
+            )
 
         # If the input has shape (W,H,3), wrap for PyTorch convolutions
         obs_shape = env.observation_space.shape
@@ -80,14 +88,17 @@ def make_env(env_id, seed, rank, log_dir, allow_early_resets):
     return _thunk
 
 
-def make_vec_envs(env_name,
-                  seed,
-                  num_processes,
-                  gamma,
-                  log_dir,
-                  device,
-                  allow_early_resets,
-                  num_frame_stack=None):
+def make_vec_envs(
+    env_name,
+    seed,
+    num_processes,
+    gamma,
+    log_dir,
+    device,
+    allow_early_resets,
+    num_frame_stack=None,
+    antagonist=False,
+):
     envs = [
         make_env(env_name, seed, i, log_dir, allow_early_resets)
         for i in range(num_processes)
@@ -106,10 +117,14 @@ def make_vec_envs(env_name,
 
     envs = VecPyTorch(envs, device)
 
+    StackWrapper = (
+        AntagonistVecPyTorchFrameStack if antagonist else VecPyTorchFrameStack
+    )
+
     if num_frame_stack is not None:
-        envs = VecPyTorchFrameStack(envs, num_frame_stack, device)
+        envs = StackWrapper(envs, num_frame_stack, device)
     elif len(envs.observation_space.shape) == 3:
-        envs = VecPyTorchFrameStack(envs, 4, device)
+        envs = StackWrapper(envs, 4, device)
 
     return envs
 
@@ -119,7 +134,7 @@ class TimeLimitMask(gym.Wrapper):
     def step(self, action):
         obs, rew, done, info = self.env.step(action)
         if done and self.env._max_episode_steps == self.env._elapsed_steps:
-            info['bad_transition'] = True
+            info["bad_transition"] = True
 
         return obs, rew, done, info
 
@@ -154,11 +169,10 @@ class TransposeImage(TransposeObs):
         obs_shape = self.observation_space.shape
         self.observation_space = Box(
             self.observation_space.low[0, 0, 0],
-            self.observation_space.high[0, 0, 0], [
-                obs_shape[self.op[0]], obs_shape[self.op[1]],
-                obs_shape[self.op[2]]
-            ],
-            dtype=self.observation_space.dtype)
+            self.observation_space.high[0, 0, 0],
+            [obs_shape[self.op[0]], obs_shape[self.op[1]], obs_shape[self.op[2]]],
+            dtype=self.observation_space.dtype,
+        )
 
     def observation(self, ob):
         return ob.transpose(self.op[0], self.op[1], self.op[2])
@@ -199,9 +213,11 @@ class VecNormalize(VecNormalize_):
         if self.obs_rms:
             if self.training and update:
                 self.obs_rms.update(obs)
-            obs = np.clip((obs - self.obs_rms.mean) /
-                          np.sqrt(self.obs_rms.var + self.epsilon),
-                          -self.clipob, self.clipob)
+            obs = np.clip(
+                (obs - self.obs_rms.mean) / np.sqrt(self.obs_rms.var + self.epsilon),
+                -self.clipob,
+                self.clipob,
+            )
             return obs
         else:
             return obs
@@ -227,23 +243,24 @@ class VecPyTorchFrameStack(VecEnvWrapper):
         high = np.repeat(wos.high, self.nstack, axis=0)
 
         if device is None:
-            device = torch.device('cpu')
-        self.stacked_obs = torch.zeros((venv.num_envs, ) +
-                                       low.shape).to(device)
+            device = torch.device("cpu")
+        self.device = device
+        self.stacked_obs = torch.zeros((venv.num_envs,) + low.shape).to(device)
 
-        observation_space = gym.spaces.Box(low=low,
-                                           high=high,
-                                           dtype=venv.observation_space.dtype)
+        observation_space = gym.spaces.Box(
+            low=low, high=high, dtype=venv.observation_space.dtype
+        )
         VecEnvWrapper.__init__(self, venv, observation_space=observation_space)
 
     def step_wait(self):
         obs, rews, news, infos = self.venv.step_wait()
-        self.stacked_obs[:, :-self.shape_dim0] = \
-            self.stacked_obs[:, self.shape_dim0:].clone()
+        self.stacked_obs[:, : -self.shape_dim0] = self.stacked_obs[
+            :, self.shape_dim0 :
+        ].clone()
         for (i, new) in enumerate(news):
             if new:
                 self.stacked_obs[i] = 0
-        self.stacked_obs[:, -self.shape_dim0:] = obs
+        self.stacked_obs[:, -self.shape_dim0 :] = obs
         return self.stacked_obs, rews, news, infos
 
     def reset(self):
@@ -252,8 +269,49 @@ class VecPyTorchFrameStack(VecEnvWrapper):
             self.stacked_obs = torch.zeros(self.stacked_obs.shape)
         else:
             self.stacked_obs.zero_()
-        self.stacked_obs[:, -self.shape_dim0:] = obs
+        self.stacked_obs[:, -self.shape_dim0 :] = obs
         return self.stacked_obs
 
     def close(self):
         self.venv.close()
+
+def get_scores(uenv):
+    ram = uenv._get_ram()
+    cpu_score = utils.get_cpu_score(ram)
+    player_score = utils.get_player_score(ram)
+
+    return cpu_score, player_score
+
+
+class AntagonistVecPyTorchFrameStack(VecPyTorchFrameStack):
+    def __init__(self, venv, nstack, device=None):
+        super().__init__(venv, nstack, device)
+
+        self.cpu_scores = torch.zeros(venv.num_envs)
+        self.player_scores = torch.zeros(venv.num_envs)
+
+    def points_scored(self):
+        with mp.Pool(16) as p:
+            c, p = (zip(*p.map(get_scores, self.venv.get_attr("unwrapped"))))
+        cpu_scores = torch.tensor(c)
+        player_scores = torch.tensor(p)
+        # rams = [uenv._get_ram() for uenv in self.venv.get_attr("unwrapped")]
+
+        # cpu_scores = torch.zeros(venv.num_envs).to(device)
+        # player_scores = torch.zeros(venv.num_envs).to(device)
+        
+        # torch.tensor([utils.get_cpu_score(ram) for ram in rams]).to(
+        #     self.device
+        # )
+        # player_scores = torch.tensor([utils.get_player_score(ram) for ram in rams]).to(
+        #     self.device
+        # )
+
+        scored = ~(
+            (cpu_scores == self.cpu_scores) | (player_scores == self.player_scores)
+        )
+
+        self.cpu_scores = cpu_scores
+        self.player_scores = player_scores
+
+        return scored
